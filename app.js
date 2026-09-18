@@ -211,6 +211,8 @@ function makeDemoPort() {
     multiplier: 1004, pulse_value: 1004, output_mode: "Normal",
     output_form: "C", form_a_width: "200", eoi_interval: "15",
     eoi_pulse_width: 1000, energy_adjustment: "Enabled", reset_time: 120,
+    eui: "0123456789ABCDEF", install_code: "F0E1D2C3B4A59687",
+    module_version: "2.0.5",
   };
   function dump() {
     return [
@@ -229,6 +231,13 @@ function makeDemoPort() {
     if (cmd === "V") return "SSI MPG-3 V3-07\r";
     if (cmd === "R") return dump();
     if (cmd === "+++") return "";
+    if (cmd === "info")
+      return `eui=0x${st.eui}\rstate=2\r`;
+    if (cmd === "se")
+      return `Install Code: 0x12 34 : 0xCDEF (52719)\r - ingest: ` +
+             `${st.install_code}\r`;
+    if (cmd === "version")
+      return `Version: ${st.module_version}\r`;
     const m = cmd.match(/^([MPSTCWFEAI])(\d+)$/);
     if (!m) return "Error\r";
     const n = parseInt(m[2]);
@@ -248,16 +257,26 @@ function makeDemoPort() {
   }
   return {
     demo: true,
-    async write(data) {
-      const text = new TextDecoder().decode(data);
-      let reply = "";
-      for (const line of text.split("\r")) {
-        if (line.trim()) reply += handle(line.trim());
-      }
-      if (reply) queueMicrotask(() => { rxBuffer += reply; });
+    writable: {
+      getWriter() {
+        return {
+          async write(data) {
+            const text = new TextDecoder().decode(data);
+            let reply = "";
+            for (const line of text.split("\r")) {
+              if (line.trim()) reply += handle(line.trim());
+            }
+            if (reply) {
+              await sleep(15);
+              rxBuffer += reply;
+            }
+          },
+          releaseLock() {},
+        };
+      },
     },
     async close() {},
-    setSignals() {},
+    async setSignals() {},
   };
 }
 
@@ -333,11 +352,11 @@ function renderChips() {
           v => { form.energy_adjustment = v; formDirty = true; renderChips(); });
 
   $("grpWidth").classList.toggle("hidden", form.output_form !== "A");
-  $("grpEoi").classList.toggle("hidden", !sup("eoi"));
+  $("grpEoi").classList.toggle("hidden", !supports("eoi"));
   $("grpEoiW").classList.toggle("hidden",
-    !sup("eoi") || form.eoi_interval === "Disabled");
-  $("grpEnergy").classList.toggle("hidden", !sup("energy"));
-  $("grpReset").classList.toggle("hidden", !sup("reset_time"));
+    !supports("eoi") || form.eoi_interval === "Disabled");
+  $("grpEnergy").classList.toggle("hidden", !supports("energy"));
+  $("grpReset").classList.toggle("hidden", !supports("reset_time"));
 }
 
 function chipRow(id, values, current, onpick) {
@@ -354,10 +373,10 @@ function chipRow(id, values, current, onpick) {
 
 function applySupport() {
   const sup = (f) => !unsupported().includes(f);
-  $("grpEoi").classList.toggle("hidden", !sup("eoi"));
-  $("grpEoiW").classList.toggle("hidden", !sup("eoi"));
-  $("grpEnergy").classList.toggle("hidden", !sup("energy"));
-  $("grpReset").classList.toggle("hidden", !sup("reset_time"));
+  $("grpEoi").classList.toggle("hidden", !supports("eoi"));
+  $("grpEoiW").classList.toggle("hidden", !supports("eoi"));
+  $("grpEnergy").classList.toggle("hidden", !supports("energy"));
+  $("grpReset").classList.toggle("hidden", !supports("reset_time"));
 }
 
 // ------------------------------------------------------------- program
@@ -369,15 +388,15 @@ function buildSettings() {
   const s = { multiplier: mult, pulse_value: pulse,
               output_mode: form.output_mode, output_form: form.output_form,
               form_a_width: form.output_form === "A" ? form.form_a_width : null,
-              eoi_interval: sup("eoi") ? form.eoi_interval : null,
+              eoi_interval: supports("eoi") ? form.eoi_interval : null,
               eoi_pulse_width: null, energy_adjustment: null, reset_time: null };
-  if (sup("eoi")) {
+  if (supports("eoi")) {
     s.eoi_pulse_width =
       form.eoi_interval === "Disabled" ? 0 :
       form.eoi_pulse_width == null ? 0 : form.eoi_pulse_width;
   }
-  if (sup("energy")) s.energy_adjustment = form.energy_adjustment;
-  if (sup("reset_time") && $("f_reset_time").value) {
+  if (supports("energy")) s.energy_adjustment = form.energy_adjustment;
+  if (supports("reset_time") && $("f_reset_time").value) {
     const rt = parseInt($("f_reset_time").value);
     if (!(rt >= 60 && rt <= 300)) throw new Error("reset time 60-300");
     s.reset_time = rt;
@@ -628,3 +647,24 @@ $("btnLogClear").onclick = () => {
 ["f_multiplier", "f_pulse_value", "f_reset_time"].forEach(id => {
   $(id).addEventListener("input", () => { formDirty = true; });
 });
+
+// ------------------------------------------------- self-test (#autotest)
+// headless-gate hook: open the page with #autotest to run the full
+// demo flow (connect -> program -> verify) and report in the title.
+if (location.hash === "#autotest") {
+  (async () => {
+    try {
+      await connect(true);
+      if ($("statusPill").textContent !== "CONNECTED")
+        throw new Error("connect failed");
+      const wanted = buildSettings();
+      const actual = await programDevice(wanted, () => {});
+      const diffs = verify(wanted, actual);
+      document.title = diffs.length === 0
+        ? "AUTOTEST PASS"
+        : "AUTOTEST FAIL: " + diffs.join("; ");
+    } catch (e) {
+      document.title = "AUTOTEST ERROR: " + (e.message || e);
+    }
+  })();
+}
