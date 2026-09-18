@@ -231,20 +231,65 @@ async function connectSerialIdentity(onStatus) {
 
 async function readIdentity() {
   if (!device.version.startsWith("3.")) return null;
+  let lastErr = "unknown";
+  for (let round = 1; round <= 3; round++) {
+    try {
+      diag(`identity read round ${round}`);
+      if (!await passthrough(true)) {
+        lastErr = "could not enter pass-through (no +++ reply)";
+        diag(lastErr);
+        await sleep(800);
+        continue;
+      }
+      const info = await transact("info", 2500);
+      diag("info reply: " + JSON.stringify(info.slice(0, 70)));
+      const eui = info.match(/eui=\s*(?:0x|x)?\s*([0-9A-Fa-f\s]{17,22})/i)?.[1]
+        ?.replace(/\s+/g, "").slice(0, 16).toUpperCase() || null;
+      const se = await transact("se", 2500);
+      diag("se reply: " + JSON.stringify(se.slice(0, 70)));
+      const ic = se.match(/ingest:\s*([0-9A-Fa-f]{8,40})/)?.[1]?.toUpperCase() || null;
+      const ver = await transact("version", 2500);
+      const mv = ver.match(/Version:\s*([\d.]+)/)?.[1] || null;
+      await passthrough(false);
+      if (!eui && !ic) {
+        lastErr = "module answered but no identity parsed";
+        diag(lastErr);
+        await sleep(1000);
+        continue;
+      }
+      diag(`identity OK: eui=${eui} ic=${ic} mv=${mv}`);
+      return { eui, install_code: ic, module_version: mv };
+    } catch (e) {
+      lastErr = String(e.message || e);
+      diag("identity error: " + lastErr);
+      try { await passthrough(false); } catch (e2) {}
+      await sleep(800);
+    }
+  }
+  return { error: lastErr };
+}
+
+async function retryIdentity() {
+  const btn = $("btnIdRetry");
+  btn.disabled = true;
+  btn.textContent = "Reading...";
   try {
-    await passthrough(true);
-    const info = await transact("info", 2500);
-    const eui = info.match(/eui=x?\s*([0-9A-Fa-f\s]{17,22})/)?.[1]
-      ?.replace(/\s+/g, "").slice(0, 16).toUpperCase() || null;
-    const se = await transact("se", 2500);
-    const ic = se.match(/ingest:\s*([0-9A-Fa-f]{8,40})/)?.[1]?.toUpperCase() || null;
-    const ver = await transact("version", 2500);
-    const mv = ver.match(/Version:\s*([\d.]+)/)?.[1] || null;
-    await passthrough(false);
-    return { eui, install_code: ic, module_version: mv };
-  } catch (e) {
-    try { await passthrough(false); } catch (e2) {}
-    return { error: String(e.message || e) };
+    device.identity = await readIdentity() || {};
+    const id = device.identity;
+    diag(`identity retry: eui=${id.eui} ic=${id.install_code} err=${id.error || "none"}`);
+    if (id.eui) {
+      $("euiVal").textContent = groupFours(id.eui);
+      $("kvEui").classList.remove("hidden");
+      $("btnIdRetry").classList.add("hidden");
+    }
+    if (id.install_code) {
+      $("icVal").textContent = groupFours(id.install_code);
+      $("kvIc").classList.remove("hidden");
+    }
+    toast(id.eui ? "Identity read" : "Still could not read - reconnect and retry", !id.eui);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Re-read identity";
   }
 }
 
@@ -256,7 +301,7 @@ function makeDemoPort() {
     multiplier: 1004, pulse_value: 1004, output_mode: "Normal",
     output_form: "C", form_a_width: "200", eoi_interval: "15",
     eoi_pulse_width: 1000, energy_adjustment: "Enabled", reset_time: 120,
-    eui: "0123456789ABCDEF", install_code: "F0E1D2C3B4A59687",
+    eui: "01234567 89ABCDEF", install_code: "F0E1D2C3B4A59687",
     module_version: "2.0.5", pt: false,
   };
   function dump() {
@@ -401,12 +446,19 @@ async function connect(demoMode) {
     loadForm(settings);
     applySupport();
     renderChips();
-    if (device.identity?.eui) {
-      $("euiVal").textContent = groupFours(device.identity.eui);
-    } else $("kvEui").classList.add("hidden");
-    if (device.identity?.install_code) {
-      $("icVal").textContent = groupFours(device.identity.install_code);
+    const id = device.identity || {};
+    if (id.eui) {
+      $("euiVal").textContent = groupFours(id.eui);
+      $("kvEui").classList.remove("hidden");
+    } else {
+      $("euiVal").textContent = "read failed - tap Re-read identity";
+      $("kvEui").classList.remove("hidden");
+    }
+    if (id.install_code) {
+      $("icVal").textContent = groupFours(id.install_code);
+      $("kvIc").classList.remove("hidden");
     } else $("kvIc").classList.add("hidden");
+    $("btnIdRetry").classList.toggle("hidden", !!id.eui);
     setPill("connected", "CONNECTED");
     toast(demo ? "Demo device connected" : "Device connected");
   } catch (e) {
@@ -740,6 +792,7 @@ $("btnCopy").onclick = () => {
     .catch(() => toast("copy failed - select the text manually", true));
 };
 $("btnLogDl").onclick = downloadCsv;
+$("btnIdRetry").onclick = retryIdentity;
 $("btnDiagCopy").onclick = () => {
   navigator.clipboard?.writeText(diagLines.join("\n"))
     .then(() => toast("Diagnostics copied"))
