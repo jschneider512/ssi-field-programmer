@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSI Field Programmer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="title">SSI <span>Field</span></div>
+  <div id="statusPill" class="pill waiting">NOT CONNECTED</div>
+</header>
+
+<main>
+  <!-- connect -->
+  <section id="connectCard" class="card">
+    <button id="btnConnect" class="btn primary big">CONNECT MPG</button>
+    <p class="hint" id="connectHint">Plug the MPG in, then tap CONNECT.
+      Pick "MCP2221" (or "SSI") in the browser's device list.</p>
+    <p class="hint warn hidden" id="serialUnsupported">
+      This browser has no Web Serial support. Use Chrome or Edge
+      (desktop, or Android Chrome 121+).</p>
+  </section>
+
+  <!-- identity -->
+  <section id="idCard" class="card hidden">
+    <h3>Device</h3>
+    <div class="kv"><label>Firmware</label><span id="fwVal">-</span></div>
+    <div class="kv" id="kvEui"><label>EUI-64</label><span id="euiVal">-</span></div>
+    <div class="kv" id="kvIc"><label>Install Code</label><span id="icVal">-</span></div>
+  </section>
+
+  <!-- settings -->
+  <section id="setCard" class="card hidden">
+    <h3>Parameters</h3>
+    <div class="grp">
+      <label>Pulse Multiplier</label>
+      <input id="f_multiplier" type="number" inputmode="numeric" min="1" max="999999">
+    </div>
+    <div class="grp">
+      <label>Pulse Value (Wh)</label>
+      <input id="f_pulse_value" type="number" inputmode="numeric" min="1" max="999999">
+    </div>
+    <div class="grp">
+      <label>Output Mode</label>
+      <div class="chips" id="c_output_mode"></div>
+    </div>
+    <div class="grp">
+      <label>Output Form</label>
+      <div class="chips" id="c_output_form"></div>
+    </div>
+    <div class="grp hidden" id="grpWidth">
+      <label>Form A Width (ms)</label>
+      <div class="chips" id="c_form_a_width"></div>
+    </div>
+    <div class="grp hidden" id="grpEoi">
+      <label>EOI Interval</label>
+      <div class="chips" id="c_eoi_interval"></div>
+    </div>
+    <div class="grp hidden" id="grpEoiW">
+      <label>EOI Pulse Width (ms)</label>
+      <div class="chips" id="c_eoi_pulse_width"></div>
+    </div>
+    <div class="grp hidden" id="grpEnergy">
+      <label>Energy Adjustment</label>
+      <div class="chips" id="c_energy_adjustment"></div>
+    </div>
+    <div class="grp hidden" id="grpReset">
+      <label>Reset Time (s)</label>
+      <input id="f_reset_time" type="number" inputmode="numeric" min="60" max="300">
+    </div>
+    <button id="btnReread" class="btn small">Re-read from device</button>
+  </section>
+
+  <button id="btnProgram" class="program hidden">PROGRAM DEVICE</button>
+
+  <!-- result -->
+  <section id="resultCard" class="card hidden">
+    <h1 id="resultTitle">PASS</h1>
+    <div id="resultBody" class="mono"></div>
+    <div id="qrBox"></div>
+    <p class="hint">Scan the QR for the full human-readable record,
+      or copy it below.</p>
+    <textarea id="qrText" rows="6" readonly class="mono"></textarea>
+    <div class="btnrow">
+      <button id="btnCopy" class="btn small">Copy record</button>
+      <button id="btnNext" class="btn primary">NEXT DEVICE</button>
+    </div>
+  </section>
+
+  <!-- run log -->
+  <section class="card">
+    <h3>Run log (this device)</h3>
+    <div id="logList" class="loglist mono"></div>
+    <div class="btnrow">
+      <button id="btnLogDl" class="btn small">Download CSV</button>
+      <button id="btnLogClear" class="btn small danger">Clear</button>
+    </div>
+  </section>
+
+  <p class="foot">SSI field programmer &middot; works offline after first load
+    &middot; <a href="#" id="lnkDemo">demo mode</a></p>
+</main>
+
+<div id="busyOverlay" class="overlay hidden">
+  <div class="busybox">
+    <div class="spinner"></div>
+    <h2 id="busyText">Programming device...</h2>
+    <p>Do not unplug the device.</p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="qrcode.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
