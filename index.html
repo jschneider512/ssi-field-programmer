@@ -16,6 +16,10 @@
   <!-- connect -->
   <section id="connectCard" class="card">
     <button id="btnConnect" class="btn primary big">CONNECT MPG</button>
+    <div id="connectStatus" class="connstatus hidden">
+      <span class="minispin"></span>
+      <span id="connectStatusText"></span>
+    </div>
     <p class="hint" id="connectHint">Plug the MPG in, then tap CONNECT.
       Pick "MCP2221" (or "SSI") in the browser's device list.</p>
     <p class="hint warn hidden" id="serialUnsupported">
@@ -97,6 +101,9 @@
       <button id="btnLogDl" class="btn small">Download CSV</button>
       <button id="btnLogClear" class="btn small danger">Clear</button>
     </div>
+    <h3>Diagnostics</h3>
+    <div id="diagList" class="loglist mono"></div>
+    <button id="btnDiagCopy" class="btn small">Copy diagnostics</button>
   </section>
 
   <p class="foot">SSI field programmer &middot; works offline after first load

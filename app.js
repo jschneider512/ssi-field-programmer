@@ -54,12 +54,15 @@ function unsupported() {
 function supports(f) { return !unsupported().includes(f); }
 
 // ------------------------------------------------------------- serial
-async function openSerial() {
+async function openSerial(onStatus) {
   if (!("serial" in navigator)) throw new Error(
     "Web Serial not supported - use Chrome/Edge (Android: Chrome 121+)");
+  onStatus("open the device picker - pick MCP2221");
   port = await navigator.serial.requestPort({ filters: [VID_FILTER] });
+  onStatus("opening serial port...");
   await port.open({ baudRate: BAUD, dataBits: 8, stopBits: 1, parity: "none",
                     bufferSize: 4096 });
+  onStatus("configuring port...");
   await port.setSignals({ dataTerminalReady: true, requestToSend: true });
   rxBuffer = "";
   pumpReads();
@@ -117,8 +120,17 @@ function cleanResponse(text) {
 /* send + retry until the reply contains `expect` (10x / 500 ms, vendor) */
 async function validated(command, expect, tries = 10) {
   let last = "";
+  let toggles = 0;
   for (let i = 0; i < tries; i++) {
     last = await transact(command);
+    if (/IHD>|No such command|Resetting module/i.test(last) && toggles < 2) {
+      toggles++;
+      diag(`module pass-through during ${command} - toggling out`);
+      const r = await transact("+++", 800);
+      if (/Entered/i.test(r)) { await writeLine("+++"); await sleep(300); }
+      i--;                       // recovery does not consume a retry
+      continue;
+    }
     if (last.includes(expect)) return last;
     if (i < tries - 1) await sleep(500);
   }
@@ -170,38 +182,71 @@ function parseDump(dump) {
   return s;
 }
 
+/* pass-through state helper: +++ toggles; replies say Entered/Exited.
+   Returns true when the final state matches `enter`. */
+async function passthrough(enter) {
+  const r = await transact("+++", 900);
+  diag(`+++ -> ${/Entered/i.test(r) ? "Entered" : /Exited/i.test(r) ? "Exited" : "no reply"}`);
+  if (/Entered/i.test(r)) {
+    if (enter) return true;
+    const r2 = await transact("+++", 900);
+    return /Exited/i.test(r2);
+  }
+  if (/Exited/i.test(r)) {
+    if (!enter) return true;
+    const r2 = await transact("+++", 900);
+    return /Entered/i.test(r2);
+  }
+  return !enter;          // no reply: assume SSI normal mode
+}
+
+/* Identity read with boot-banner / pass-through resilience:
+   - retries V for up to 25 s (device boot takes ~10 s)
+   - if the internal module is answering (pass-through left engaged by
+     an earlier crash), toggles back to SSI normal mode automatically */
+async function connectSerialIdentity(onStatus) {
+  const deadline = performance.now() + 25000;
+  let attempt = 0, toggles = 0;
+  while (performance.now() < deadline) {
+    attempt++;
+    onStatus(attempt === 1 ? "reading firmware..."
+      : `device booting / module busy - retrying (attempt ${attempt})...`);
+    const resp = await transact("V", 1500);
+    const fw = parseFw(resp);
+    if (fw) return fw;
+    const moduleTalking = /IHD>|Version:\s*\d|Resetting module/i.test(resp)
+                          && !/MPG|WPG/.test(resp);
+    if (moduleTalking && toggles < 2) {
+      toggles++;
+      onStatus("module in pass-through - switching back to normal...");
+      diag("pass-through detected on V - toggling out");
+      const r = await transact("+++", 900);
+      if (/Entered/i.test(r)) { await writeLine("+++"); await sleep(400); }
+    } else {
+      await sleep(700);
+    }
+  }
+  return null;
+}
+
 async function readIdentity() {
   if (!device.version.startsWith("3.")) return null;
-  const t = async (cmd, quiet) => {
-    await writeLine("+++");                    // toggle pass-through
-    await sleep(350);
-    const r = await transact(cmd, 2500);
-    return r;
-  };
   try {
-    // enter pass-through: +++ until a command is acknowledged
-    await writeLine("+++");
-    await sleep(400);
-    transactNoExpect("+++");                   // settle either state
-    await sleep(300);
+    await passthrough(true);
     const info = await transact("info", 2500);
-    const m = info.match(/eui=x?\s*([0-9A-Fa-f\s]{17,22})/);
-    const eui = m ? m[1].replace(/\s+/g, "").slice(0, 16).toUpperCase() : null;
+    const eui = info.match(/eui=x?\s*([0-9A-Fa-f\s]{17,22})/)?.[1]
+      ?.replace(/\s+/g, "").slice(0, 16).toUpperCase() || null;
     const se = await transact("se", 2500);
-    const m2 = se.match(/ingest:\s*([0-9A-Fa-f]{8,40})/);
-    const ic = m2 ? m2[1].toUpperCase() : null;
+    const ic = se.match(/ingest:\s*([0-9A-Fa-f]{8,40})/)?.[1]?.toUpperCase() || null;
     const ver = await transact("version", 2500);
     const mv = ver.match(/Version:\s*([\d.]+)/)?.[1] || null;
-    await writeLine("+++");                    // exit pass-through
-    await sleep(300);
+    await passthrough(false);
     return { eui, install_code: ic, module_version: mv };
   } catch (e) {
+    try { await passthrough(false); } catch (e2) {}
     return { error: String(e.message || e) };
   }
 }
-
-// fire-and-forget variant used while syncing +++ state
-function transactNoExpect(cmd) { writeLine(cmd); }
 
 // ------------------------------------------------------------- demo sim
 /* Minimal in-page MPG simulator so the page works without hardware
@@ -212,7 +257,7 @@ function makeDemoPort() {
     output_form: "C", form_a_width: "200", eoi_interval: "15",
     eoi_pulse_width: 1000, energy_adjustment: "Enabled", reset_time: 120,
     eui: "0123456789ABCDEF", install_code: "F0E1D2C3B4A59687",
-    module_version: "2.0.5",
+    module_version: "2.0.5", pt: false,
   };
   function dump() {
     return [
@@ -227,10 +272,22 @@ function makeDemoPort() {
       `Energy Adj.: ${st.energy_adjustment}`,
     ].join("\r") + "\r";
   }
+  function moduleJunk() {
+    return "No such command\r\nUsage:\r\ninfo\r\nse\r\nversion\r\nIHD>";
+  }
   function handle(cmd) {
+    if (cmd === "+++") {
+      st.pt = !st.pt;
+      return (st.pt ? "Entered Pass-Through" : "Exited Pass-Through") + "\r";
+    }
+    if (st.pt) {
+      if (cmd === "info") return `eui=0x${st.eui}\rstate=2\r`;
+      if (cmd === "se") return `- ingest: ${st.install_code}\r`;
+      if (cmd === "version") return `Version: ${st.module_version}\r`;
+      return moduleJunk();
+    }
     if (cmd === "V") return "SSI MPG-3 V3-07\r";
     if (cmd === "R") return dump();
-    if (cmd === "+++") return "";
     if (cmd === "info")
       return `eui=0x${st.eui}\rstate=2\r`;
     if (cmd === "se")
@@ -280,6 +337,24 @@ function makeDemoPort() {
   };
 }
 
+
+// ------------------------------------------------------------- diag
+const diagLines = [];
+try {
+  diagLines.push(...JSON.parse(localStorage.getItem("ssi_field_diag") || "[]"));
+} catch (e) {}
+function diag(msg) {
+  const line = new Date().toTimeString().slice(0, 8) + " " + msg;
+  diagLines.push(line);
+  if (diagLines.length > 60) diagLines.shift();
+  try {
+    localStorage.setItem("ssi_field_diag", JSON.stringify(diagLines));
+  } catch (e) {}
+  const el = $("diagList");
+  if (el) el.innerHTML = diagLines.slice().reverse()
+    .map(l => `<div>${l}</div>`).join("");
+}
+
 // ------------------------------------------------------------- flow
 function setPill(state, text) {
   const p = $("statusPill");
@@ -287,18 +362,37 @@ function setPill(state, text) {
   p.textContent = text;
 }
 
+function connStat(text) {
+  $("connectStatus").classList.remove("hidden");
+  $("connectStatusText").textContent = text;
+}
+function connStatHide() { $("connectStatus").classList.add("hidden"); }
+
 async function connect(demoMode) {
+  const btn = $("btnConnect");
+  btn.disabled = true;
+  setPill("connecting", "CONNECTING...");
   try {
     demo = !!demoMode;
-    if (!demo) await openSerial(); else port = makeDemoPort();
-    const resp = await transact("V");
-    const fw = parseFw(resp);
-    if (!fw) throw new Error(`no MPG/WPG identity in reply: ${JSON.stringify(resp)}`);
+    diag(`connect start (demo=${demo})`);
+    if (!demo) await openSerial(connStat); else port = makeDemoPort();
+    connStat("reading firmware...");
+    const fw = await connectSerialIdentity(connStat);
+    if (!fw) throw new Error("no MPG/WPG identity in 25 s - unplug and " +
+      "replug the device, wait 10 s, then tap CONNECT again");
     device = { fw: fw.text, version: fw.version, family: fw.family };
+    diag(`firmware: ${fw.text}`);
+    connStat("reading parameters...");
     const settings = parseDump(await validated("R", "Multiplier"));
     device.settings = settings;
+    if (device.version.startsWith("3.")) {
+      connStat("reading module identity (EUI / install code)...");
+    }
     device.identity = await readIdentity();
+    device.identity = device.identity || {};
+    diag(`identity: eui=${device.identity.eui} ic=${device.identity.install_code} mv=${device.identity.module_version} err=${device.identity.error || "none"}`);
 
+    connStatHide();
     $("connectCard").classList.add("hidden");
     $("idCard").classList.remove("hidden");
     $("setCard").classList.remove("hidden");
@@ -313,14 +407,17 @@ async function connect(demoMode) {
     if (device.identity?.install_code) {
       $("icVal").textContent = groupFours(device.identity.install_code);
     } else $("kvIc").classList.add("hidden");
-    if (!device.identity || device.identity.error)
-      $("modNote")?.classList.remove("hidden");
     setPill("connected", "CONNECTED");
     toast(demo ? "Demo device connected" : "Device connected");
   } catch (e) {
     await closeSerial();
+    connStatHide();
+    btn.disabled = false;
     setPill("waiting", "NOT CONNECTED");
-    toast(String(e.message || e), true);
+    const msg = String(e.message || e);
+    if (/no port selected|notfound/i.test(msg))
+      toast("Device selection cancelled");
+    else toast(msg, true);
   }
 }
 
@@ -424,6 +521,7 @@ async function program() {
     err = String(e.message || e);
   }
   $("busyOverlay").classList.add("hidden");
+  diag(err ? `program error: ${err}` : `program done, diffs=${diffs.length}`);
   logRun(wanted, diffs, err);
   showResult(wanted, actual, diffs, err, performance.now() - t0);
 }
@@ -432,6 +530,7 @@ async function program() {
 async function programDevice(w, progress) {
   const step = async (label, cmd, expect) => {
     progress(label);
+    diag(`set ${label}`);
     await validated(cmd, expect);
   };
   await step("multiplier", `M${w.multiplier}`, `Multiplier: ${w.multiplier}`);
@@ -610,6 +709,9 @@ function downloadCsv() {
 
 // ------------------------------------------------------------- wiring
 (async function init() {
+  const dl = $("diagList");
+  if (dl) dl.innerHTML = diagLines.slice().reverse()
+    .map(l => `<div>${l}</div>`).join("");
   if (!("serial" in navigator)) {
     $("serialUnsupported").classList.remove("hidden");
     $("btnConnect").disabled = true;
@@ -638,6 +740,11 @@ $("btnCopy").onclick = () => {
     .catch(() => toast("copy failed - select the text manually", true));
 };
 $("btnLogDl").onclick = downloadCsv;
+$("btnDiagCopy").onclick = () => {
+  navigator.clipboard?.writeText(diagLines.join("\n"))
+    .then(() => toast("Diagnostics copied"))
+    .catch(() => toast("copy failed", true));
+};
 $("btnLogClear").onclick = () => {
   localStorage.removeItem("ssi_field_log");
   renderLog();
@@ -657,6 +764,23 @@ if (location.hash === "#autotest") {
       await connect(true);
       if ($("statusPill").textContent !== "CONNECTED")
         throw new Error("connect failed");
+      const wanted = buildSettings();
+      const actual = await programDevice(wanted, () => {});
+      const diffs = verify(wanted, actual);
+      document.title = diffs.length === 0
+        ? "AUTOTEST PASS"
+        : "AUTOTEST FAIL: " + diffs.join("; ");
+    } catch (e) {
+      document.title = "AUTOTEST ERROR: " + (e.message || e);
+    }
+  })();
+}
+if (location.hash === "#autotestwedged") {
+  (async () => {
+    try {
+      await connect(true);
+      await passthrough(true);              // leave it wedged
+      diag("wedged state engaged for recovery test");
       const wanted = buildSettings();
       const actual = await programDevice(wanted, () => {});
       const diffs = verify(wanted, actual);
