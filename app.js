@@ -6,6 +6,10 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const APP_VERSION = "1.1.0";
+const DEFAULTS = { output_mode: "Normal", output_form: "C",
+                   eoi_interval: "15", eoi_pulse_width: "Disabled",
+                   energy_adjustment: "Enabled" };
 
 const BAUD = 57600;
 const VID_FILTER = { usbVendorId: 0x04d8 };   // Microchip MCP2221
@@ -155,7 +159,7 @@ function parseFw(resp) {
 
 function parseDump(dump) {
   const v = {};
-  for (const line of dump.split(/\r?\n/)) {
+  for (const line of dump.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")) {
     if (line.includes(":")) {
       const i = line.indexOf(":");
       v[line.slice(0, i).trim()] = line.slice(i + 1).trim();
@@ -312,8 +316,11 @@ function makeDemoPort() {
       st.output_form === "A" ? `Output Form: A ${st.form_a_width}ms`
                              : "Output Form: C",
       `Reset Time: ${st.reset_time} seconds`,
-      `Interval Every: ${st.eoi_interval} min.`,
-      `End of Interval: ${st.eoi_pulse_width}ms`,
+      st.eoi_interval === "Disabled" ? "Interval Disabled"
+        : `Interval Every: ${st.eoi_interval} min.`,
+      st.eoi_pulse_width === 0 || st.eoi_pulse_width == null
+        ? "End of Interval: Disabled"
+        : `End of Interval: ${st.eoi_pulse_width}ms`,
       `Energy Adj.: ${st.energy_adjustment}`,
     ].join("\r") + "\r";
   }
@@ -475,14 +482,22 @@ async function connect(demoMode) {
 
 function loadForm(s) {
   form = { ...s };
+  // Voltus standard configuration: operator may change any of these,
+  // but the form always STARTS here regardless of what the device held
+  form.output_mode = DEFAULTS.output_mode;
+  form.output_form = DEFAULTS.output_form;
+  if (supports("eoi")) {
+    form.eoi_interval = DEFAULTS.eoi_interval;
+    form.eoi_pulse_width = DEFAULTS.eoi_pulse_width;
+  }
+  if (supports("energy")) form.energy_adjustment = DEFAULTS.energy_adjustment;
   formDirty = false;
-  $("f_multiplier").value = s.multiplier;
-  $("f_pulse_value").value = s.pulse_value;
-  if (s.reset_time != null) $("f_reset_time").value = s.reset_time;
+  $("f_multiplier").value = form.multiplier;
+  $("f_pulse_value").value = form.pulse_value;
+  if (form.reset_time != null) $("f_reset_time").value = form.reset_time;
 }
 
 function renderChips() {
-  const sup = (f) => !unsupported().includes(f);
   chipRow("c_output_mode", ["Normal", "Signed"], form.output_mode,
           v => { form.output_mode = v; formDirty = true; renderChips(); });
   chipRow("c_output_form", ["A", "C"], form.output_form,
@@ -541,8 +556,9 @@ function buildSettings() {
               eoi_pulse_width: null, energy_adjustment: null, reset_time: null };
   if (supports("eoi")) {
     s.eoi_pulse_width =
-      form.eoi_interval === "Disabled" ? 0 :
-      form.eoi_pulse_width == null ? 0 : form.eoi_pulse_width;
+      form.eoi_interval === "Disabled" ||
+      form.eoi_pulse_width === "Disabled" ||
+      form.eoi_pulse_width == null ? 0 : parseInt(form.eoi_pulse_width);
   }
   if (supports("energy")) s.energy_adjustment = form.energy_adjustment;
   if (supports("reset_time") && $("f_reset_time").value) {
@@ -793,6 +809,34 @@ $("btnCopy").onclick = () => {
 };
 $("btnLogDl").onclick = downloadCsv;
 $("btnIdRetry").onclick = retryIdentity;
+$("btnAgree").onclick = () => {
+  $("warnOverlay").classList.add("hidden");
+  $("btnLogToggle").textContent = "Run log / diagnostics \u25B8";
+};
+$("btnLogToggle").onclick = () => {
+  const card = $("logCard");
+  const shown = !card.classList.contains("hidden");
+  card.classList.toggle("hidden", shown);
+  $("btnLogToggle").textContent =
+    "Run log / diagnostics " + (shown ? "\u25B8" : "\u25BE");
+};
+$("btnEmail").onclick = () => {
+  const to = ($("emailTo").value || "").trim() || "jschneider@voltus.co";
+  const subject = `SSI Field Programmer v${APP_VERSION} diagnostics ` +
+    new Date().toISOString().slice(0, 16);
+  const runs = JSON.parse(localStorage.getItem("ssi_field_log") || "[]")
+    .slice(-12);
+  const body =
+    `SSI Field Programmer v${APP_VERSION}\n` +
+    `User agent: ${navigator.userAgent}\n\n` +
+    `--- diagnostics (recent) ---\n${diagLines.slice(-40).join("\n")}\n\n` +
+    `--- last runs ---\n` +
+    runs.map(r => `${r.ts} ${r.result} m=${r.multiplier} p=${r.pulse_value} ` +
+      `eui=${r.eui || "-"} err=${r.err || "-"}`).join("\n");
+  window.location.href = "mailto:" + to +
+    "?subject=" + encodeURIComponent(subject) +
+    "&body=" + encodeURIComponent(body.slice(0, 1800));
+};
 $("btnDiagCopy").onclick = () => {
   navigator.clipboard?.writeText(diagLines.join("\n"))
     .then(() => toast("Diagnostics copied"))
@@ -814,9 +858,12 @@ $("btnLogClear").onclick = () => {
 if (location.hash === "#autotest") {
   (async () => {
     try {
+      document.title = "AUTOTEST: start";
       await connect(true);
+      document.title = "AUTOTEST: connected";
       if ($("statusPill").textContent !== "CONNECTED")
         throw new Error("connect failed");
+      document.title = "AUTOTEST: programming";
       const wanted = buildSettings();
       const actual = await programDevice(wanted, () => {});
       const diffs = verify(wanted, actual);

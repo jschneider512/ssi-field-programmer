@@ -7,6 +7,15 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="warnOverlay" class="overlay">
+  <div class="warnbox">
+    <h2>Authorized use only</h2>
+    <p>You should only use this tool on behalf of Voltus, Inc. to adjust
+      a Voltus-owned MPG or WPG device. Please use this tool only as
+      directed by your Project Engineer.</p>
+    <button id="btnAgree" class="btn primary big">I UNDERSTAND - CONTINUE</button>
+  </div>
+</div>
 <header>
   <div class="title">SSI <span>Field</span></div>
   <div id="statusPill" class="pill waiting">NOT CONNECTED</div>
@@ -94,20 +103,29 @@
     </div>
   </section>
 
-  <!-- run log -->
+  <!-- support -->
   <section class="card">
-    <h3>Run log (this device)</h3>
+    <button id="btnLogToggle" class="btn small">Run log / diagnostics &#9656;</button>
+    <section class="card hidden" id="logCard">
+      <h3>Run log (this device)</h3>
     <div id="logList" class="loglist mono"></div>
-    <div class="btnrow">
-      <button id="btnLogDl" class="btn small">Download CSV</button>
-      <button id="btnLogClear" class="btn small danger">Clear</button>
+      <div class="btnrow">
+        <button id="btnLogDl" class="btn small">Download CSV</button>
+        <button id="btnLogClear" class="btn small danger">Clear</button>
+      </div>
+      <h3>Diagnostics</h3>
+      <div id="diagList" class="loglist mono"></div>
+      <button id="btnDiagCopy" class="btn small">Copy diagnostics</button>
+    </section>
+    <div class="grp">
+      <label>Email diagnostics to</label>
+      <input id="emailTo" type="email" class="mono"
+             value="jschneider@voltus.co">
     </div>
-    <h3>Diagnostics</h3>
-    <div id="diagList" class="loglist mono"></div>
-    <button id="btnDiagCopy" class="btn small">Copy diagnostics</button>
+    <button id="btnEmail" class="btn">Email Diagnostics</button>
   </section>
 
-  <p class="foot">SSI field programmer &middot; works offline after first load
+  <p class="foot">SSI field programmer v1.1.0 &middot; works offline after first load
     &middot; <a href="#" id="lnkDemo">demo mode</a></p>
 </main>
 
